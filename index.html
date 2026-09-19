@@ -451,30 +451,6 @@ function rTermine(){
   });
   row.appendChild(sv);b.appendChild(row);panelsEl.appendChild(b);
 
-  panelsEl.appendChild(el('h2','section','Kalender'));
-  var kb=el('div','note');
-  kb.innerHTML='<b>Austausch über Kalenderdateien.</b> Eine laufende Synchronisation ist nicht möglich — '+
-    'Apple Kalender hat keine Schnittstelle, die eine Webseite ansprechen darf. '+
-    'Was geht: Termine hier ausgeben und in den Kalender legen, oder eine Kalenderdatei einlesen.';
-  var krow=el('div','btnrow');
-
-  var imp=el('button','btn primary','Kalenderdatei einlesen');imp.type='button';
-  imp.addEventListener('click',importICSFile);
-
-  var exK=el('button','btn','Kommende ausgeben');exK.type='button';
-  exK.addEventListener('click',function(){
-    downloadICS(S.events.filter(function(e){return e.date>=today()}),'wochenplan-termine.ics');
-  });
-
-  var exA=el('button','btn','Alle ausgeben');exA.type='button';
-  exA.addEventListener('click',function(){
-    downloadICS(S.events,'wochenplan-alle-termine.ics');
-  });
-
-  krow.appendChild(imp);krow.appendChild(exK);krow.appendChild(exA);
-  kb.appendChild(krow);
-  panelsEl.appendChild(kb);
-
   if(vorbei.length){
     panelsEl.appendChild(el('h2','section','Vergangen — '+vorbei.length));
     panelsEl.appendChild(evList(vorbei.reverse().slice(0,10)));
@@ -489,12 +465,6 @@ function evList(arr){
     m.appendChild(el('div','t',e.title));
     m.appendChild(el('div','m',new Date(e.date+'T00:00').toLocaleDateString('de-CH',{weekday:'short',day:'2-digit',month:'2-digit'})+(e.place?' · '+e.place:'')));
     r.appendChild(m);
-    var k=el('button','del','\u1F4C5');k.type='button';k.title='In den Kalender';
-    k.textContent='\u2197';
-    k.addEventListener('click',function(){
-      downloadICS([e], (e.title.replace(/[^a-zA-Z0-9äöüÄÖÜ ]/g,'').trim()||'termin')+'.ics');
-    });
-    r.appendChild(k);
     var d=el('button','del','×');d.type='button';
     d.addEventListener('click',function(){
       if(!confirm('Termin löschen?'))return;
@@ -503,165 +473,6 @@ function evList(arr){
     r.appendChild(d);L.appendChild(r);
   });
   return L;
-}
-
-/* ---------- KALENDER: .ics erzeugen und einlesen ---------- */
-
-function pad2(n){return String(n).padStart(2,'0')}
-
-function icsEsc(s){
-  return String(s||'').replace(/\\/g,'\\\\').replace(/;/g,'\\;').replace(/,/g,'\\,')
-    .replace(/\r?\n/g,'\\n');
-}
-// Zeilen auf 75 Zeichen falten, wie es der Standard verlangt
-function fold(line){
-  var out=[],s=line;
-  while(s.length>73){ out.push(s.slice(0,73)); s=' '+s.slice(73) }
-  out.push(s);
-  return out.join('\r\n');
-}
-function stamp(){
-  var d=new Date();
-  return d.getUTCFullYear()+pad2(d.getUTCMonth()+1)+pad2(d.getUTCDate())+'T'+
-         pad2(d.getUTCHours())+pad2(d.getUTCMinutes())+pad2(d.getUTCSeconds())+'Z';
-}
-
-// Erzeugt eine Kalenderdatei. Termine ohne Uhrzeit werden ganztaegig.
-function toICS(events){
-  var L=['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//Ivan Wochen-Dashboard//DE','CALSCALE:GREGORIAN','METHOD:PUBLISH'];
-  events.forEach(function(e){
-    if(!e.date)return;
-    var d=e.date.replace(/-/g,'');
-    L.push('BEGIN:VEVENT');
-    L.push('UID:'+(e.id||uid())+'@wochen-dashboard');
-    L.push('DTSTAMP:'+stamp());
-    if(e.time){
-      var t=e.time.replace(':','')+'00';
-      // Ortszeit ohne Zeitzonenangabe: der Kalender nimmt die Zeit des Geraets
-      L.push('DTSTART:'+d+'T'+t);
-      var eh=parseInt(e.time.slice(0,2),10), em=parseInt(e.time.slice(3,5),10);
-      var end=new Date(parseInt(e.date.slice(0,4),10),parseInt(e.date.slice(5,7),10)-1,
-                       parseInt(e.date.slice(8,10),10),eh+1,em);
-      L.push('DTEND:'+end.getFullYear()+pad2(end.getMonth()+1)+pad2(end.getDate())+'T'+
-             pad2(end.getHours())+pad2(end.getMinutes())+'00');
-    }else{
-      var next=new Date(parseInt(e.date.slice(0,4),10),parseInt(e.date.slice(5,7),10)-1,
-                        parseInt(e.date.slice(8,10),10)+1);
-      L.push('DTSTART;VALUE=DATE:'+d);
-      L.push('DTEND;VALUE=DATE:'+next.getFullYear()+pad2(next.getMonth()+1)+pad2(next.getDate()));
-    }
-    L.push(fold('SUMMARY:'+icsEsc(e.title)));
-    if(e.place)L.push(fold('LOCATION:'+icsEsc(e.place)));
-    L.push('END:VEVENT');
-  });
-  L.push('END:VCALENDAR');
-  return L.join('\r\n');
-}
-
-function downloadICS(events,name){
-  if(!events.length){alert('Keine Termine zum Ausgeben.');return}
-  var blob=new Blob([toICS(events)],{type:'text/calendar;charset=utf-8'});
-  var url=URL.createObjectURL(blob);
-  var a=document.createElement('a');
-  a.href=url;a.download=name;document.body.appendChild(a);a.click();
-  setTimeout(function(){URL.revokeObjectURL(url);a.remove()},600);
-}
-
-// Liest eine Kalenderdatei. Wiederkehrende Termine werden uebersprungen.
-function parseICS(text){
-  // gefaltete Zeilen wieder zusammensetzen
-  var raw=text.replace(/\r\n/g,'\n').replace(/\n[ \t]/g,'');
-  var lines=raw.split('\n');
-  var out=[], skipped=0, cur=null;
-  function unesc(s){
-    return String(s||'').replace(/\\n/gi,' ').replace(/\\,/g,',')
-      .replace(/\\;/g,';').replace(/\\\\/g,'\\').trim();
-  }
-  lines.forEach(function(line){
-    if(/^BEGIN:VEVENT/i.test(line)){ cur={}; return }
-    if(/^END:VEVENT/i.test(line)){
-      if(cur){
-        if(cur.rrule){ skipped++; }
-        else if(cur.date&&cur.title){
-          out.push({id:cur.uid||('i'+Math.random().toString(36).slice(2,9)),
-                    title:cur.title,date:cur.date,time:cur.time||'',place:cur.place||''});
-        }
-      }
-      cur=null; return;
-    }
-    if(!cur)return;
-    var i=line.indexOf(':');
-    if(i<0)return;
-    var keyPart=line.slice(0,i), val=line.slice(i+1);
-    var key=keyPart.split(';')[0].toUpperCase();
-
-    if(key==='SUMMARY'){ cur.title=unesc(val) }
-    else if(key==='LOCATION'){ cur.place=unesc(val) }
-    else if(key==='UID'){ cur.uid=val.trim().slice(0,60) }
-    else if(key==='RRULE'){ cur.rrule=true }
-    else if(key==='DTSTART'){
-      var v=val.trim();
-      var m=v.match(/^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})?(Z)?)?$/);
-      if(!m)return;
-      if(m[4]===undefined){                     // ganztaegig
-        cur.date=m[1]+'-'+m[2]+'-'+m[3]; cur.time='';
-      }else if(m[7]==='Z'){                     // UTC -> Ortszeit des Geraets
-        var d=new Date(Date.UTC(+m[1],+m[2]-1,+m[3],+m[4],+m[5],+(m[6]||0)));
-        cur.date=d.getFullYear()+'-'+pad2(d.getMonth()+1)+'-'+pad2(d.getDate());
-        cur.time=pad2(d.getHours())+':'+pad2(d.getMinutes());
-      }else{                                    // Ortszeit, so uebernehmen
-        cur.date=m[1]+'-'+m[2]+'-'+m[3];
-        cur.time=m[4]+':'+m[5];
-      }
-    }
-  });
-  return {events:out, skipped:skipped};
-}
-
-function importICSFile(){
-  var f=document.createElement('input');
-  f.type='file'; f.accept='.ics,text/calendar';
-  f.addEventListener('change',function(){
-    var file=f.files&&f.files[0]; if(!file)return;
-    var fr=new FileReader();
-    fr.onload=function(){
-      var res;
-      try{ res=parseICS(String(fr.result)) }
-      catch(err){ alert('Datei konnte nicht gelesen werden: '+err.message); return }
-      if(!res.events.length){
-        alert('In der Datei wurde kein einzelner Termin gefunden.'+
-          (res.skipped? '\n\n'+res.skipped+' wiederkehrende Termine wurden übersprungen.':''));
-        return;
-      }
-      // Doppelte erkennen: gleiche Kennung, oder gleiches Datum, Zeit und Bezeichnung
-      var have={};
-      S.events.forEach(function(x){
-        have[x.id]=true;
-        have[x.date+'|'+(x.time||'')+'|'+x.title.toLowerCase()]=true;
-      });
-      var neu=res.events.filter(function(x){
-        return !have[x.id] && !have[x.date+'|'+(x.time||'')+'|'+x.title.toLowerCase()];
-      });
-      var dop=res.events.length-neu.length;
-      if(!neu.length){
-        alert('Alle '+res.events.length+' Termine sind bereits vorhanden.');
-        return;
-      }
-      var txt=neu.slice(0,8).map(function(x){
-        return '· '+x.date+(x.time?' '+x.time:' (ganztägig)')+'  '+x.title;
-      }).join('\n');
-      var frage=neu.length+' neue Termine gefunden'+
-        (dop? ', '+dop+' bereits vorhanden':'')+
-        (res.skipped? ', '+res.skipped+' wiederkehrende übersprungen':'')+
-        ':\n\n'+txt+(neu.length>8? '\n… und '+(neu.length-8)+' weitere':'')+
-        '\n\nÜbernehmen?';
-      if(!confirm(frage))return;
-      neu.forEach(function(x){S.events.push(x)});
-      save();render();
-    };
-    fr.readAsText(file);
-  });
-  f.click();
 }
 
 /* ---------- PRIORITÄTEN ---------- */
